@@ -189,6 +189,11 @@ func (c *Cache) Fetch(ctx context.Context, url string, ttlOverride ...time.Durat
 func (c *Cache) fetchData(ctx context.Context, url string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	resp, err := c.httpClient.Do(req)
+
+	// We assume that any status code which is not 200 is an error
+	if resp.StatusCode != 200 {
+		return nil, errors.New(fmt.Sprintf("unexpected status code %d", resp.StatusCode))
+	}
 	defer func(Body io.ReadCloser) {
 		err := Body.Close()
 		if err != nil {

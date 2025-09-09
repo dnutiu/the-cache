@@ -13,7 +13,54 @@ import (
 )
 
 func TestCache_Fetch(t *testing.T) {
-	// test fetchData
+	t.Run("test fetch caches entry", func(t *testing.T) {
+		// Given
+		serverCallCounter := 0
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			serverCallCounter += 1
+			_, _ = w.Write([]byte(fmt.Sprintf("Hello World")))
+		}))
+		defer server.Close()
+
+		leCache := NewCache(10 * time.Minute)
+
+		// Then
+		for range 100 {
+			data, err := leCache.Fetch(context.Background(), server.URL)
+			assert.NoError(t, err)
+			assert.Equal(t, "Hello World", string(data))
+			assert.Equal(t, 1, serverCallCounter)
+		}
+	})
+	t.Run("test fetch error not being cached", func(t *testing.T) {
+		// Setup
+		serverCallCounter := 0
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if serverCallCounter == 0 {
+				w.WriteHeader(http.StatusInternalServerError)
+			} else {
+				w.WriteHeader(http.StatusOK)
+			}
+			serverCallCounter += 1
+			_, _ = w.Write([]byte(fmt.Sprintf("Hello World")))
+		}))
+		defer server.Close()
+
+		leCache := NewCache(10 * time.Minute)
+
+		// Test error is not cached
+		data, err := leCache.Fetch(context.Background(), server.URL)
+		assert.Error(t, err)
+		assert.Equal(t, "", string(data))
+		assert.Equal(t, 1, serverCallCounter)
+
+		// Test no error
+		data, err = leCache.Fetch(context.Background(), server.URL)
+		assert.NoError(t, err)
+		assert.Equal(t, "Hello World", string(data))
+		assert.Equal(t, 2, serverCallCounter)
+	})
 }
 
 func TestCache_Stats(t *testing.T) {
