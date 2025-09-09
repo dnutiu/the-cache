@@ -11,3 +11,9 @@ Build and run the demo with
 go build ./cmd/cache-demo
 go run ./cmd/cache-demo
 ```
+
+To run the tests run 
+
+```shell
+go test ./...
+```

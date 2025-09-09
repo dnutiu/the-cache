@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+// TestCache_Fetch ensures cache fetching works
 func TestCache_Fetch(t *testing.T) {
 	t.Run("test fetch caches entry", func(t *testing.T) {
 		// Given
@@ -81,6 +82,7 @@ func TestCache_Fetch(t *testing.T) {
 	})
 }
 
+// TestCache_Stats ensures cache stats reporting works.
 func TestCache_Stats(t *testing.T) {
 	// Setup
 	serverCallCounter := 0
@@ -104,51 +106,178 @@ func TestCache_Stats(t *testing.T) {
 			}
 			wg.Done()
 		}()
-		wg.Wait()
 	}
+	wg.Wait()
 	hits, misses, entries := leCache.Stats()
 
 	// Assert
-	assert.Equal(t, 99, hits)
-	assert.Equal(t, 1, misses)
-	assert.Equal(t, 1, entries)
-	assert.Equal(t, 1, serverCallCounter)
+	assert.Equal(t, 99, hits, "the number of hits differ")
+	assert.Equal(t, 1, misses, "the number of misses differ")
+	assert.Equal(t, 1, entries, "the number of entries differ")
+	assert.Equal(t, 1, serverCallCounter, "the server calls differ")
 }
 
+// TestCache_Concurrency ensures cache behaves as expected in concurrent scenarios.
 func TestCache_Concurrency(t *testing.T) {
-	// Setup
-	serverCallCounter := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		serverCallCounter += 1
-		_, _ = w.Write([]byte(fmt.Sprintf("Hello world")))
-	}))
-	defer server.Close()
+	t.Run("test concurrency happy path", func(t *testing.T) {
+		// Setup
+		serverCallCounter := 0
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			serverCallCounter += 1
+			_, _ = w.Write([]byte(fmt.Sprintf("Hello world")))
+		}))
+		defer server.Close()
 
-	leCache := NewCache(5 * time.Second)
+		leCache := NewCache(5 * time.Second)
 
-	// Test
-	var wg sync.WaitGroup
-	for range 200 {
-		wg.Add(1)
-		go func() {
-			_, err := leCache.Fetch(context.Background(), server.URL)
-			if err != nil {
-				t.Error(fmt.Sprintf("Unknown error occured: %v", err))
-			}
-			wg.Done()
-		}()
+		// Test
+		var wg sync.WaitGroup
+		for range 200 {
+			wg.Add(1)
+			go func() {
+				_, err := leCache.Fetch(context.Background(), server.URL)
+				if err != nil {
+					t.Error(fmt.Sprintf("Unknown error occured: %v", err))
+				}
+				wg.Done()
+			}()
+		}
 		wg.Wait()
-	}
-	hits, misses, entries := leCache.Stats()
+		hits, misses, entries := leCache.Stats()
 
-	// Assert
-	assert.Equal(t, 199, hits)
-	assert.Equal(t, 1, misses)
-	assert.Equal(t, 1, entries)
-	assert.Equal(t, 1, serverCallCounter)
+		// Assert
+		assert.Equal(t, 199, hits, "the number of hits differ")
+		assert.Equal(t, 1, misses, "the number of misses differ")
+		assert.Equal(t, 1, entries, "the number of entries differ")
+		assert.Equal(t, 1, serverCallCounter, "the server calls differ")
+	})
+	t.Run("test concurrency with some errors", func(t *testing.T) {
+		// Note: this test might be flaky.
+
+		// Setup
+		serverCallCounter := 0
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if serverCallCounter == 0 {
+				w.WriteHeader(http.StatusInternalServerError)
+			} else {
+				w.WriteHeader(http.StatusOK)
+			}
+			serverCallCounter += 1
+			_, _ = w.Write([]byte(fmt.Sprintf("Hello world")))
+		}))
+		defer server.Close()
+
+		leCache := NewCache(5 * time.Second)
+
+		// Test, if an error occurs all deduped requests get the error
+		var wg sync.WaitGroup
+		for range 200 {
+			wg.Add(1)
+			go func() {
+				_, _ = leCache.Fetch(context.Background(), server.URL)
+				wg.Done()
+			}()
+		}
+		wg.Wait()
+		hits, misses, entries := leCache.Stats()
+
+		// Assert
+		assert.Equal(t, 0, hits, "the number of hits differ")
+		assert.Equal(t, 0, misses, "the number of misses differ")
+		assert.Equal(t, 0, entries, "the number of entries differ")
+		assert.Equal(t, 1, serverCallCounter, "the server calls differ")
+
+		// Test
+		for range 200 {
+			wg.Add(1)
+			go func() {
+				_, _ = leCache.Fetch(context.Background(), server.URL)
+				wg.Done()
+			}()
+		}
+		wg.Wait()
+		hits, misses, entries = leCache.Stats()
+
+		// Assert
+		assert.Equal(t, 199, hits, "the number of hits differ")
+		assert.Equal(t, 1, misses, "the number of misses differ")
+		assert.Equal(t, 1, entries, "the number of entries differ")
+		assert.Equal(t, 2, serverCallCounter, "the server calls differ")
+	})
+	t.Run("test concurrency entry expires before being fetched", func(t *testing.T) {
+		// Setup
+		serverCallCounter := 0
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if serverCallCounter == 0 {
+				time.Sleep(500 * time.Millisecond)
+			}
+			w.WriteHeader(http.StatusOK)
+			serverCallCounter += 1
+			_, _ = w.Write([]byte(fmt.Sprintf("Hello world")))
+		}))
+		defer server.Close()
+
+		leCache := NewCache(10 * time.Millisecond)
+
+		// Test
+		var wg sync.WaitGroup
+		for range 200 {
+			wg.Add(1)
+			go func() {
+				data, err := leCache.Fetch(context.Background(), server.URL)
+				assert.NoError(t, err)
+				assert.Equal(t, string(data), "Hello world")
+				wg.Done()
+			}()
+		}
+		wg.Wait()
+		hits, misses, entries := leCache.Stats()
+
+		// Assert
+		assert.Equal(t, 199, hits, "the number of hits differ")
+		assert.Equal(t, 1, misses, "the number of misses differ")
+		assert.Equal(t, 1, entries, "the number of cache entries differ")
+		assert.Equal(t, 1, serverCallCounter, "the server call counter is different")
+	})
+	t.Run("test concurrency slow fetch", func(t *testing.T) {
+		// Setup
+		serverCallCounter := 0
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if serverCallCounter == 0 {
+				time.Sleep(1000 * time.Millisecond)
+			}
+			w.WriteHeader(http.StatusOK)
+			serverCallCounter += 1
+			_, _ = w.Write([]byte(fmt.Sprintf("Hello world")))
+		}))
+		defer server.Close()
+
+		leCache := NewCache(10 * time.Minute)
+
+		// Test
+		var wg sync.WaitGroup
+		for range 200 {
+			wg.Add(1)
+			go func() {
+				data, err := leCache.Fetch(context.Background(), server.URL)
+				assert.NoError(t, err)
+				assert.Equal(t, string(data), "Hello world")
+				wg.Done()
+			}()
+		}
+		wg.Wait()
+		hits, misses, entries := leCache.Stats()
+
+		// Assert
+		assert.Equal(t, 199, hits, "the number of hits differ")
+		assert.Equal(t, 1, misses, "the number of misses differ")
+		assert.Equal(t, 1, entries, "the number of cache entries differ")
+		assert.Equal(t, 1, serverCallCounter, "the server call counter is different")
+	})
 }
 
+// TestCacheTTL ensures cache handles per entry TTL correctly.
 func TestCacheTTL(t *testing.T) {
 	serverCallCounter := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -40,9 +41,9 @@ type Cache struct {
 	// httpClient holds an instance of the HTTP client
 	httpClient *http.Client
 	// hitsCounter tracks how many cache hits occurred for this cache.
-	hitsCounter int
+	hitsCounter atomic.Int32
 	// missesCounter tracks how many cache misses occurred for this cache.
-	missesCounter int
+	missesCounter atomic.Int32
 }
 
 // NewCache builds a new Cache.
@@ -108,7 +109,7 @@ func (c *Cache) Fetch(ctx context.Context, url string, ttlOverride ...time.Durat
 						// Clean up listener resources, no longer registering
 						close(listener.isError)
 						close(listener.isCompleted)
-
+						c.hitsCounter.Add(1)
 						return cachedEntry.data, nil
 					}
 				}
@@ -121,13 +122,14 @@ func (c *Cache) Fetch(ctx context.Context, url string, ttlOverride ...time.Durat
 				case val := <-listener.isError:
 					return nil, val
 				case <-listener.isCompleted:
+					c.hitsCounter.Add(1)
 					return cachedEntry.data, nil
 
 				}
 			}
 
 			// Has data, return it
-			c.hitsCounter += 1
+			c.hitsCounter.Add(1)
 			return cachedEntry.data, nil
 		}
 
@@ -135,6 +137,7 @@ func (c *Cache) Fetch(ctx context.Context, url string, ttlOverride ...time.Durat
 		if ok && time.Now().UnixNano() >= cachedEntry.expiryAt {
 			// Maybe I Could attempt to set data to nil and update timestamp of internal cache, then proceed to refetch here
 			c.internalCache.Delete(url)
+			c.missesCounter.Add(1)
 			return c.Fetch(ctx, url, ttlToSet)
 		}
 	}
@@ -181,7 +184,7 @@ func (c *Cache) Fetch(ctx context.Context, url string, ttlOverride ...time.Durat
 		close(listener.isError)
 	}
 	theInternalCacheEntry.dataMutex.Unlock()
-	c.missesCounter += 1
+	c.missesCounter.Add(1)
 	return data, nil
 }
 
@@ -219,5 +222,5 @@ func (c *Cache) Stats() (hits int, misses int, entries int) {
 		}
 		return true
 	})
-	return c.hitsCounter, c.missesCounter, entries
+	return int(c.hitsCounter.Load()), int(c.missesCounter.Load()), entries
 }
