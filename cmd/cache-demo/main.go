@@ -25,6 +25,7 @@ func main() {
 		}()
 		wg.Wait()
 	}
-	fmt.Println(leCache.Stats())
+	hits, misses, entries := leCache.Stats()
+	fmt.Println(fmt.Sprintf("The cache has hits=%d, misses=%d, entries=%d", hits, misses, entries))
 
 }
