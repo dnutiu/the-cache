@@ -64,7 +64,7 @@ func (c *Cache) Fetch(ctx context.Context, url string, ttlOverride ...time.Durat
 
 	theInternalCacheEntry := cacheEntry{
 		cacheListeners:            make([]cacheListener, 0),
-		expiryAt:                  time.Now().Add(ttlToSet).Unix(),
+		expiryAt:                  time.Now().Add(ttlToSet).UnixNano(),
 		isCurrentlyBeingProcessed: true,
 		data:                      nil,
 	}
@@ -76,7 +76,7 @@ func (c *Cache) Fetch(ctx context.Context, url string, ttlOverride ...time.Durat
 		cachedEntry, ok := mapEntry.(*cacheEntry)
 
 		// Cache entry is not expired
-		if ok && time.Now().Unix() < cachedEntry.expiryAt {
+		if ok && time.Now().UnixNano() < cachedEntry.expiryAt {
 
 			// Attempt to grab its data
 			cachedEntry.dataMutex.Lock()
@@ -131,8 +131,9 @@ func (c *Cache) Fetch(ctx context.Context, url string, ttlOverride ...time.Durat
 			return cachedEntry.data, nil
 		}
 
-		// Cache entry is expired, request dedup might fail here, should not happen often
-		if ok && time.Now().Unix() < cachedEntry.expiryAt {
+		// If cache entry is expired, request dedup for ongoing stuff might fail here, should not happen often
+		if ok && time.Now().UnixNano() >= cachedEntry.expiryAt {
+			// Maybe I Could attempt to set data to nil and update timestamp of internal cache, then proceed to refetch here
 			c.internalCache.Delete(url)
 			return c.Fetch(ctx, url, ttlToSet)
 		}
@@ -201,7 +202,7 @@ func (c *Cache) fetchData(ctx context.Context, url string) ([]byte, error) {
 // Stats returns the statistics of the cache.
 func (c *Cache) Stats() (hits int, misses int, entries int) {
 	// Note: we use range here to check if keys have been expired to report the correct entries counter.
-	// This may not be ideal
+	// This may not be ideal, could use a background goroutine.
 	c.internalCache.Range(func(key, value interface{}) bool {
 		entry, ok := value.(*cacheEntry)
 		if ok {

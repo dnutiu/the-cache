@@ -3,6 +3,8 @@ package pkg
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
@@ -15,25 +17,37 @@ func TestCache_Fetch(t *testing.T) {
 }
 
 func TestCache_Stats(t *testing.T) {
+	// Setup
+	serverCallCounter := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		serverCallCounter += 1
+		_, _ = w.Write([]byte(fmt.Sprintf("Hello world")))
+	}))
+	defer server.Close()
+
 	leCache := NewCache(10 * time.Minute)
+
+	// Test
 	var wg sync.WaitGroup
-	for i := range 100 {
+	for range 100 {
 		wg.Add(1)
 		go func() {
-			_, err := leCache.Fetch(context.Background(), "https://www.computerwoche.de/article/4049065/lernplattformen-fur-unternehmen-ein-kaufratgeber.html")
-			if err == nil {
-				fmt.Printf("Got the data: %d\n", i)
-			} else {
-				fmt.Printf("Got an error: %d\n", i)
+			_, err := leCache.Fetch(context.Background(), server.URL)
+			if err != nil {
+				t.Error(fmt.Sprintf("Unknown error occured: %v", err))
 			}
 			wg.Done()
 		}()
 		wg.Wait()
 	}
 	hits, misses, entries := leCache.Stats()
-	assert.Equal(t, hits, 99)
-	assert.Equal(t, misses, 1)
-	assert.Equal(t, entries, 1)
+
+	// Assert
+	assert.Equal(t, 99, hits)
+	assert.Equal(t, 1, misses)
+	assert.Equal(t, 1, entries)
+	assert.Equal(t, 1, serverCallCounter)
 }
 
 func TestCache_Concurrency(t *testing.T) {
@@ -41,5 +55,53 @@ func TestCache_Concurrency(t *testing.T) {
 }
 
 func TestCacheTTL(t *testing.T) {
-	// test ttl expiration, re fetchData
+	serverCallCounter := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		serverCallCounter += 1
+		_, _ = w.Write([]byte(fmt.Sprintf("Hello world %d", serverCallCounter)))
+	}))
+	defer server.Close()
+	leCache := NewCache(100 * time.Millisecond)
+
+	// Test first request, it should fetch the same URL as ttl is not expired
+	serverUrl := server.URL
+	data, err := leCache.Fetch(context.Background(), serverUrl)
+	assert.NoError(t, err)
+	assert.Equal(t, "Hello world 1", string(data))
+
+	data, err = leCache.Fetch(context.Background(), serverUrl)
+	assert.NoError(t, err)
+	assert.Equal(t, "Hello world 1", string(data))
+	assert.Equal(t, 1, serverCallCounter)
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Test second fetch
+	data, err = leCache.Fetch(context.Background(), serverUrl, 250*time.Millisecond)
+	assert.NoError(t, err)
+	assert.Equal(t, "Hello world 2", string(data))
+	assert.Equal(t, 2, serverCallCounter)
+
+	for range 100 {
+		data, err = leCache.Fetch(context.Background(), serverUrl, 250*time.Millisecond)
+		assert.NoError(t, err)
+		assert.Equal(t, "Hello world 2", string(data))
+		assert.Equal(t, 2, serverCallCounter)
+	}
+	// Sleep to pass TTL override time
+	time.Sleep(100 * time.Millisecond)
+
+	data, err = leCache.Fetch(context.Background(), serverUrl, 250*time.Millisecond)
+	assert.NoError(t, err)
+	assert.Equal(t, "Hello world 2", string(data))
+	assert.Equal(t, 2, serverCallCounter)
+
+	// Final result test
+	time.Sleep(150 * time.Millisecond)
+	data, err = leCache.Fetch(context.Background(), serverUrl, 250*time.Millisecond)
+	assert.NoError(t, err)
+	assert.Equal(t, "Hello world 3", string(data))
+	assert.Equal(t, 3, serverCallCounter)
+
 }
