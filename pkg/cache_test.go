@@ -98,7 +98,37 @@ func TestCache_Stats(t *testing.T) {
 }
 
 func TestCache_Concurrency(t *testing.T) {
-	// Simulate concurrent fetching
+	// Setup
+	serverCallCounter := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		serverCallCounter += 1
+		_, _ = w.Write([]byte(fmt.Sprintf("Hello world")))
+	}))
+	defer server.Close()
+
+	leCache := NewCache(5 * time.Second)
+
+	// Test
+	var wg sync.WaitGroup
+	for range 200 {
+		wg.Add(1)
+		go func() {
+			_, err := leCache.Fetch(context.Background(), server.URL)
+			if err != nil {
+				t.Error(fmt.Sprintf("Unknown error occured: %v", err))
+			}
+			wg.Done()
+		}()
+		wg.Wait()
+	}
+	hits, misses, entries := leCache.Stats()
+
+	// Assert
+	assert.Equal(t, 199, hits)
+	assert.Equal(t, 1, misses)
+	assert.Equal(t, 1, entries)
+	assert.Equal(t, 1, serverCallCounter)
 }
 
 func TestCacheTTL(t *testing.T) {
