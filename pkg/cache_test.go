@@ -33,6 +33,24 @@ func TestCache_Fetch(t *testing.T) {
 			assert.Equal(t, 1, serverCallCounter)
 		}
 	})
+	t.Run("test fetch with context", func(t *testing.T) {
+		// Given
+		serverCallCounter := 0
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			serverCallCounter += 1
+			_, _ = w.Write([]byte(fmt.Sprintf("Hello World")))
+		}))
+		defer server.Close()
+
+		leCache := NewCache(10 * time.Minute)
+
+		// Then
+		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Nanosecond)
+		_, err := leCache.Fetch(ctx, server.URL)
+		assert.Error(t, err, "context deadline did not exceed")
+		cancel()
+	})
 	t.Run("test fetch error not being cached", func(t *testing.T) {
 		// Setup
 		serverCallCounter := 0
